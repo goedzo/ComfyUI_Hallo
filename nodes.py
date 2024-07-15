@@ -149,6 +149,8 @@ class HalloNode:
 
         # get src audio
         src_audio_path = os.path.join(folder_paths.get_input_directory(), driving_audio)
+        if not os.path.exists(src_audio_path):
+            src_audio_path = driving_audio # absolute path
 
         env = ':'.join([os.environ.get('PYTHONPATH', ''), cur_dir])
         cmd = f"""PYTHONPATH={env} python {infer_py} --config "{tmp_yaml_path}" --source_image "{src_img_path}" --driving_audio "{src_audio_path}" --output {output_video_path} --pose_weight {pose_weight} --face_weight {face_weight} --lip_weight {lip_weight} --face_expand_ratio {face_expand_ratio}"""
