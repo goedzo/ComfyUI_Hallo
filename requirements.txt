@@ -22,5 +22,6 @@ pre-commit
 accelerate
 xformers
 torch
+torchaudio
 numpy
 opencv-python

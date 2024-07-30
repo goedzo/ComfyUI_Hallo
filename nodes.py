@@ -3,6 +3,7 @@ import cv2
 import yaml
 import torch
 import random
+import torchaudio
 import folder_paths
 import numpy as np
 from PIL import Image
@@ -93,7 +94,7 @@ class HalloNode:
                     files.append(f)
         return {"required": {
                     "source_image": ("IMAGE", ),
-                    "driving_audio": (sorted(files), ),
+                    "driving_audio": ("AUDIO", ),
                     "pose_weight" :("FLOAT",{"default": 1.0}),
                     "face_weight":("FLOAT",{"default": 1.0}),
                     "lip_weight":("FLOAT",{"default": 1.0}),
@@ -147,10 +148,20 @@ class HalloNode:
             print(f'saved src image to {src_img_path}')
             break
 
-        # get src audio
-        src_audio_path = os.path.join(folder_paths.get_input_directory(), driving_audio)
-        if not os.path.exists(src_audio_path):
-            src_audio_path = driving_audio # absolute path
+        # # get src audio
+        # src_audio_path = os.path.join(folder_paths.get_input_directory(), driving_audio)
+        # if not os.path.exists(src_audio_path):
+        #     src_audio_path = driving_audio # absolute path
+        
+        # save audio to path
+        waveform = driving_audio["waveform"]
+        sample_rate = driving_audio["sample_rate"]
+        
+        if waveform.dim() == 3:
+            waveform = waveform.squeeze(0)
+        
+        src_audio_path = os.path.join(output_dir, f"hallo_{output_name}_src_audio.wav")
+        torchaudio.save(src_audio_path, waveform, sample_rate)
 
         env = ':'.join([os.environ.get('PYTHONPATH', ''), cur_dir])
         cmd = f"""PYTHONPATH={env} python {infer_py} --config "{tmp_yaml_path}" --source_image "{src_img_path}" --driving_audio "{src_audio_path}" --output {output_video_path} --pose_weight {pose_weight} --face_weight {face_weight} --lip_weight {lip_weight} --face_expand_ratio {face_expand_ratio}"""
