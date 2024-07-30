@@ -3,6 +3,7 @@
 Unofficial [Hallo](https://github.com/fudan-generative-vision/hallo) support for [ComfyUI](https://github.com/comfyanonymous/ComfyUI).
 
 ## Important Updates
+- **2024/07/30:** Added support to ComfyUI's official AudioLoad Node
 - **2024/06/26:** Added ComfyUI nodes and workflow examples
 
 ## Example Workflow
