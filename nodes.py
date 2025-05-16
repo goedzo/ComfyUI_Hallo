@@ -165,103 +165,119 @@ class HalloNode:
         src_audio_path = os.path.join(output_dir, f"hallo_{output_name}_src_audio.wav")
         torchaudio.save(src_audio_path, waveform, sample_rate)
 
-        # === START OF REPLACEMENT ===
-        python_executable = sys.executable  # Get the path to the current Python interpreter
+        # === START OF MODIFIED SUBPROCESS EXECUTION ===
+        python_executable = sys.executable
         
-        # Arguments for inference.py
-        script_arguments_for_inference_py = [
-            "--config", tmp_yaml_path,
-            "--source_image", src_img_path,
-            "--driving_audio", src_audio_path,
-            "--output", output_video_path,
-            "--pose_weight", str(pose_weight),
-            "--face_weight", str(face_weight),
-            "--lip_weight", str(lip_weight),
-            "--face_expand_ratio", str(face_expand_ratio),
-        ]
-
-        # Create a copy of the current environment variables
-        process_env = os.environ.copy()
-
-        # Set PYTHONPATH for the subprocess.
-        # We need cur_dir (e.g., D:\tools\ComfyUI_windows_portable\ComfyUI\custom_nodes\ComfyUI_Hallo)
-        # in PYTHONPATH so that the 'hallo' package (located at cur_dir/hallo) can be imported by inference.py.
+        # Get the site-packages directory for the current Python interpreter
+        # and escape backslashes for embedding in Python code strings
+        site_packages_path_escaped = ""
+        for p in sys.path:
+            if "site-packages" in p and os.path.isdir(p): # Make sure it's a directory
+                site_packages_path_escaped = p.replace("\\", "\\\\")
+                break
         
-        paths_for_pythonpath = [cur_dir] # cur_dir must be first for precedence
-        
-        existing_pythonpath_str = process_env.get("PYTHONPATH", "")
-        if existing_pythonpath_str:
-            # Split existing path and filter out empty strings that might result from os.pathsep at the end or consecutive separators
-            paths_for_pythonpath.extend([p for p in existing_pythonpath_str.split(os.pathsep) if p])
-        
-        # Deduplicate while preserving order (especially ensuring cur_dir remains first if unique)
-        # and remove any empty strings that might result from splitting.
-        seen_paths = set()
-        unique_ordered_paths = []
-        for path_item in paths_for_pythonpath:
-            if path_item and path_item not in seen_paths: # Ensure path_item is not empty and not a duplicate
-                unique_ordered_paths.append(path_item)
-                seen_paths.add(path_item)
-        
-        process_env["PYTHONPATH"] = os.pathsep.join(unique_ordered_paths)
+        # Escape cur_dir (path to ComfyUI_Hallo node) for embedding in Python code strings
+        hallo_custom_node_dir_escaped = cur_dir.replace("\\", "\\\\")
 
-        # Escape paths for use in a Python string literal within the -c command
-        escaped_cur_dir = cur_dir.replace("\\", "\\\\")
-        escaped_infer_py_path = infer_py.replace("\\", "\\\\")
+        # --- Debug: Test import moviepy using a direct python -c call with sys.path manipulation ---
+        import_test_code = f"import sys; "
+        if site_packages_path_escaped: # Check if found
+            import_test_code += f"sys.path.insert(0, r'{site_packages_path_escaped}'); "
+        import_test_code += f"sys.path.insert(0, r'{hallo_custom_node_dir_escaped}'); " # For 'hallo' package itself
+        import_test_code += "print(f'[Import Test] Subprocess sys.path: {{sys.path}}'); import moviepy; from moviepy.editor import AudioFileClip; print('moviepy.editor successfully imported in python -c test')"
 
-        # Construct the Python code to be executed by `python -c`
-        # This code will:
-        # 1. Add `cur_dir` to the beginning of `sys.path`.
-        # 2. Set `sys.argv` as if `infer_py` was called with `script_arguments_for_inference_py`.
-        # 3. Execute `infer_py` using `runpy.run_path`.
-        python_code_to_execute = (
-            f"import sys; import os; import runpy; "
-            f"sys.path.insert(0, r'{escaped_cur_dir}'); "
-            f"print(f'[ComfyUI_Hallo nodes.py] Injected sys.path[0]: {{sys.path[0] if sys.path else None}} via python -c'); "
-            f"print(f'[ComfyUI_Hallo nodes.py] CWD for python -c: {{os.getcwd()}}'); "
-            f"print(f'[ComfyUI_Hallo nodes.py] PYTHONPATH for python -c: {{os.environ.get(\"PYTHONPATH\")}}'); "
-            f"sys.argv = [r'{escaped_infer_py_path}'] + {script_arguments_for_inference_py!r}; " # Use !r for robust list representation
-            f"runpy.run_path(r'{escaped_infer_py_path}', run_name='__main__')"
-        )
+        print(f"Attempting direct import test with code: {import_test_code}")
+        try:
+            test_import_cmd = [python_executable, "-c", import_test_code]
+            # For this test, we won't try to set PYTHONPATH via env, 
+            # as we are directly manipulating sys.path in the -c command.
+            # Let it inherit the parent environment.
+            test_result = subprocess.run(test_import_cmd, capture_output=True, text=True, check=False, cwd=cur_dir)
+            print(f"[Import Test with Subprocess ENV] STDOUT: {test_result.stdout.strip()}")
+            print(f"[Import Test with Subprocess ENV] STDERR: {test_result.stderr.strip()}")
+        except Exception as e_test:
+            print(f"[Import Test with Subprocess ENV] Failed: {e_test}")
+        # === End of new debug ===
 
-        # Final command arguments for subprocess.run
-        cmd_args_for_subprocess = [
-            python_executable,
-            "-c",
-            python_code_to_execute
+        # --- Prepare for the main inference.py call using runpy and sys.path manipulation ---
+        # Path to inference.py, escaped for embedding in the Python code string
+        inference_script_full_path_escaped = os.path.join(cur_dir, "scripts", "inference.py").replace("\\", "\\\\")
+
+        # Arguments for inference.py (sys.argv for the script)
+        script_args_for_runpy = [
+            inference_script_full_path_escaped, # sys.argv[0] for inference.py
+            '--config', tmp_yaml_path,
+            '--source_image', src_img_path,
+            '--driving_audio', src_audio_path, # Using src_audio_path from the context
+            '--output', output_video_path,
+            '--pose_weight', str(pose_weight),
+            '--face_weight', str(face_weight),
+            '--lip_weight', str(lip_weight),
+            '--face_expand_ratio', str(face_expand_ratio)
         ]
         
+        # Python code to execute via -c. This code will set up sys.path and then run inference.py
+        runpy_code = f"""
+import sys
+import os
+import runpy
+
+# Escaped paths from the parent ComfyUI process
+hallo_node_dir_for_subprocess = r'{hallo_custom_node_dir_escaped}'
+site_packages_dir_for_subprocess = r'{site_packages_path_escaped}'
+
+# Prepend paths for module searching
+if site_packages_dir_for_subprocess and site_packages_dir_for_subprocess not in sys.path:
+    sys.path.insert(0, site_packages_dir_for_subprocess)
+if hallo_node_dir_for_subprocess and hallo_node_dir_for_subprocess not in sys.path:
+    sys.path.insert(0, hallo_node_dir_for_subprocess)
+
+print(f'[ComfyUI_Hallo nodes.py] Subprocess sys.path before runpy: {{sys.path}}')
+print(f'[ComfyUI_Hallo nodes.py] Subprocess CWD: {{os.getcwd()}}')
+print(f'[ComfyUI_Hallo nodes.py] Subprocess PYTHONPATH (from env): {{os.environ.get("PYTHONPATH", "Not Set")}} # AAAA marker')
+
+sys.argv = {script_args_for_runpy!r} # Pass arguments to inference.py; !r gives a robust list representation
+runpy.run_path(r'{inference_script_full_path_escaped}', run_name='__main__')
+"""
+        
+        cmd_args_main = [python_executable, "-c", runpy_code]
+        
+        process_env = os.environ.copy() # Start with a clean copy of current environment
+        # We are trying to control sys.path *inside* the subprocess via the -c code,
+        # so setting PYTHONPATH here is currently omitted as per the strategy.
+
         print(f"Executing command: {python_executable} -c \"...python code...\" (see next line for details)")
-        print(f"ComfyUI_Hallo: Python code for -c: {python_code_to_execute}") # For debugging the generated command
-        # Set the Current Working Directory for the subprocess
-        subprocess_cwd = cur_dir 
-        print(f"ComfyUI_Hallo: Subprocess CWD: {subprocess_cwd}")
-        print(f"ComfyUI_Hallo: Subprocess PYTHONPATH: {process_env.get('PYTHONPATH')}")
+        print(f"ComfyUI_Hallo: Python code for -c (main call): {runpy_code.replace(os.linesep, ' ').strip()}")
+        print(f"ComfyUI_Hallo: Subprocess CWD for main call: {cur_dir}") # cur_dir is the unescaped path
 
         result = None # Initialize result
         try:
-            result = subprocess.run(cmd_args_for_subprocess, env=process_env, capture_output=True, text=True, check=False, cwd=subprocess_cwd)
+            # Execute the command for inference.py
+            result = subprocess.run(cmd_args_main, env=process_env, capture_output=True, text=True, check=False, cwd=cur_dir) # Set CWD to custom node dir
             
             if result.returncode != 0:
                 print("!!! Error during Hallo inference.py execution !!!")
                 print(f"Return Code: {result.returncode}")
-                print(f"Stdout: {result.stdout}")
-                print(f"Stderr: {result.stderr}")
-                # Optionally, raise an error to stop ComfyUI processing and show the error
+                print(f"Stdout:\n{result.stdout}") # Print stdout for more info
+                print(f"Stderr:\n{result.stderr}")
                 # raise RuntimeError(f"Hallo inference.py failed with stderr: {result.stderr}")
             else:
                 print("Hallo inference.py executed successfully.")
-                # You can print stdout if it's useful for debugging, but it might be verbose
                 # print(f"Stdout: {result.stdout}")
 
         except FileNotFoundError:
-            print(f"Error: Could not find Python executable at '{python_executable}' or script at '{infer_py}'")
+            # For the error message, use the unescaped path to inference.py
+            un_escaped_infer_py_path = os.path.join(cur_dir, "scripts", "inference.py")
+            print(f"Error: Could not find Python executable at '{python_executable}' or script at '{un_escaped_infer_py_path}'")
             raise # Re-raise the exception to make it visible in ComfyUI
         except Exception as e:
             print(f"An unexpected error occurred while running inference.py: {e}")
+            if result: # If subprocess was run and failed in an unexpected way but we have a result
+                print(f"Subprocess STDOUT:\n{result.stdout}")
+                print(f"Subprocess STDERR:\n{result.stderr}")
             raise # Re-raise
 
-        # === END OF REPLACEMENT ===
+        # === END OF MODIFIED SUBPROCESS EXECUTION ===
 
         if not os.path.exists(output_video_path) or os.path.getsize(output_video_path) == 0:
              # This check is important. If the video wasn't created or is empty, cv_frame_generator will fail.
